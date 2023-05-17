@@ -14,7 +14,7 @@ from omegaconf import OmegaConf
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.plugins import DDPPlugin
+from pytorch_lightning.strategies import DDPStrategy
 from torch.utils.data import DataLoader
 
 pretty_errors.configure(
@@ -152,7 +152,7 @@ if __name__ == "__main__":
                 accelerator="ddp",
                 callbacks=[early_stop_callback, checkpoint_callback],
                 max_epochs=15,
-                plugins=DDPPlugin(
+                plugins=DDPStrategy(
                     find_unused_parameters=True
                 ),  # We ignore params from cross-attention.
                 log_every_n_steps=1,

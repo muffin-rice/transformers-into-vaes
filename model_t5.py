@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from metrics import calc_all, calc_batch_mi
-from pytorch_lightning.core.lightning import LightningModule
+from pytorch_lightning import LightningModule
 from torch import optim
 from transformers import (
     AdamW,
@@ -16,7 +16,8 @@ from transformers import (
     T5ForConditionalGeneration,
     get_linear_schedule_with_warmup,
 )
-from transformers.generation_stopping_criteria import (
+
+from transformers.generation.stopping_criteria import (
     MaxLengthCriteria,
     StoppingCriteriaList,
 )
