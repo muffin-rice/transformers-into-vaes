@@ -164,7 +164,7 @@ if __name__ == "__main__":
             )
 
             trainer.fit(
-                model, train_dataloader=train_dataloader, val_dataloaders=val_dataloader
+                model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader
             )
 
             model = model_class.load_from_checkpoint(
