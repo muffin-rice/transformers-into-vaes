@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from metrics import calc_all, calc_batch_mi
+from .metrics import calc_all, calc_batch_mi
 from pytorch_lightning import LightningModule
 from torch import optim
 from transformers import (
@@ -21,7 +21,7 @@ from transformers.generation.stopping_criteria import (
     MaxLengthCriteria,
     StoppingCriteriaList,
 )
-from vendor_t5 import ModifiedT5ForConditionalGeneration
+from .vendor_t5 import ModifiedT5ForConditionalGeneration
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
@@ -145,7 +145,7 @@ class T5VAE(LightningModule):
         self.log("train_loss", loss)
         return loss
 
-    def training_epoch_end(self, outputs):
+    def on_train_epoch_end(self):
         # if self.current_epoch == 2:
         # self.decoder_unfreeze_step = self.global_step
         # for param in self.t5.decoder.parameters():
@@ -165,7 +165,7 @@ class T5VAE(LightningModule):
         # self.log("finished_epoch", self.current_epoch)
         return loss
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         ppl, nll, elbo, rec, kl, mi, au = calc_all(self, self.val_dataloader())
         self.log("val_ppl", ppl)
         self.log("val_nll", nll)
@@ -176,7 +176,7 @@ class T5VAE(LightningModule):
         self.log("val_au", au)
 
     def test_step(self, batch, batch_idx):
-        recon_loss, reg_loss, _ = self.run_batch(batch, batch_idx)
+        recon_loss, reg_loss = self.run_batch(batch, batch_idx)
         loss = recon_loss + reg_loss
         self.log("test_loss", recon_loss)
         self.log("test_reg_loss", reg_loss)
