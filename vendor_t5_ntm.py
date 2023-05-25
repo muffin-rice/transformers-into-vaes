@@ -9,8 +9,11 @@ from transformers.modeling_outputs import (
     Seq2SeqLMOutput,
     Seq2SeqModelOutput,
 )
-
 import math
+
+from torch.distributions import Gamma, Dirichlet
+from torch.distributions.kl import kl_divergence
+
 
 class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
     def __init__(self, config, latent_dim, pooling_strategy):
@@ -236,7 +239,7 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
         past_key_values = tuple((ca, ca) for ca in cross_attn)
         return past_key_values
 
-    def reparameterize(self, mu, logvar):
+    def reparameterize(self, alphas, _):
         """
         Reparameterization trick to sample from N(mu, var) from
         N(0,1).
@@ -244,48 +247,58 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
         :param logvar: (Tensor) Standard deviation of the latent Gaussian [B x D]
         :return: (Tensor) [B x D]
         """
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return eps * std + mu
+        gammas = Gamma(alphas, 1).sample()
+        total = gammas.sum()
+        xs = gammas / total
 
-    def get_entropy(self, mu, logvar):
-        latent_dim = mu.shape[0]
-        neg_entropy = (
-            -0.5 * latent_dim * math.log(2 * math.pi) - 0.5 * (1 + logvar).sum(-1)
-        ).mean()
+        return xs
 
-        return neg_entropy
+    def get_entropy(self, alphas, _):
+        # latent_dim = mu.shape[0]
+        # neg_entropy = (
+        #     -0.5 * latent_dim * math.log(2 * math.pi) - 0.5 * (1 + logvar).sum(-1)
+        # ).mean()
+        #
+        # return neg_entropy
+        dist = Dirichlet(alphas)
+        return -dist.entropy()
 
-    def calc_mi(self, z, mu, logvar):
-        x_batch, nz = mu.size()
+    def calc_mi(self, z, alphas, _):
+        # x_batch, nz = mu.size()
+        #
+        # # E_{q(z|x)}log(q(z|x)) = -0.5*nz*log(2*\pi) - 0.5*(1+logvar).sum(-1)
+        # neg_entropy = self.get_entropy(mu, logvar)
+        #
+        # # [z_batch, 1, nz]w
+        # z_samples = z.unsqueeze(1)
+        #
+        # # [1, x_batch, nz]
+        # mu, logvar = mu.unsqueeze(0), logvar.unsqueeze(0)
+        # var = logvar.exp()
+        #
+        # # (z_batch, x_batch, nz)
+        # dev = z_samples - mu
+        #
+        # # (z_batch, x_batch)
+        # log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (
+        #         nz * math.log(2 * math.pi) + logvar.sum(-1)
+        # )
+        #
+        # # log q(z): aggregate posterior
+        # # [z_batch]
+        # log_qz = torch.logsumexp(log_density, dim=1) - math.log(x_batch)
+        #
+        # return (neg_entropy - log_qz.mean(-1)).item()
+        return -1
 
-        # E_{q(z|x)}log(q(z|x)) = -0.5*nz*log(2*\pi) - 0.5*(1+logvar).sum(-1)
-        neg_entropy = self.get_entropy(mu, logvar)
+    def calc_kl(self, alphas, _, training):
+        # dimensionwise_loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
+        # if self.min_z and training:
+        #     dimensionwise_loss[dimensionwise_loss < self.min_z] = self.min_z
+        # loss = dimensionwise_loss.sum(-1)
+        # return loss
 
-        # [z_batch, 1, nz]w
-        z_samples = z.unsqueeze(1)
+        baseline = Dirichlet(torch.ones_like(alphas)) # baseline dirichlet?
+        dist = Dirichlet(alphas)
 
-        # [1, x_batch, nz]
-        mu, logvar = mu.unsqueeze(0), logvar.unsqueeze(0)
-        var = logvar.exp()
-
-        # (z_batch, x_batch, nz)
-        dev = z_samples - mu
-
-        # (z_batch, x_batch)
-        log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (
-                nz * math.log(2 * math.pi) + logvar.sum(-1)
-        )
-
-        # log q(z): aggregate posterior
-        # [z_batch]
-        log_qz = torch.logsumexp(log_density, dim=1) - math.log(x_batch)
-
-        return (neg_entropy - log_qz.mean(-1)).item()
-
-    def calc_kl(self, mu, logvar, training):
-        dimensionwise_loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
-        if self.min_z and training:
-            dimensionwise_loss[dimensionwise_loss < self.min_z] = self.min_z
-        loss = dimensionwise_loss.sum(-1)
-        return loss
+        return kl_divergence(dist, baseline)

@@ -55,34 +55,36 @@ def calc_batch_mi(model, batch, verbose=False):
     with torch.no_grad():
         _, z, mu, logvar = model(encoder_inputs, encoder_masks, labels)
 
-    x_batch, nz = mu.size()
+    return model.calc_mi(mu, logvar)
 
-    # E_{q(z|x)}log(q(z|x)) = -0.5*nz*log(2*\pi) - 0.5*(1+logvar).sum(-1)
-    neg_entropy = (
-        -0.5 * nz * math.log(2 * math.pi) - 0.5 * (1 + logvar).sum(-1)
-    ).mean()
-
-    # [z_batch, 1, nz]
-    z_samples = model.t5.reparameterize(mu, logvar)
-    z_samples = z_samples.unsqueeze(1)
-
-    # [1, x_batch, nz]
-    mu, logvar = mu.unsqueeze(0), logvar.unsqueeze(0)
-    var = logvar.exp()
-
-    # (z_batch, x_batch, nz)
-    dev = z_samples - mu
-
-    # (z_batch, x_batch)
-    log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (
-        nz * math.log(2 * math.pi) + logvar.sum(-1)
-    )
-
-    # log q(z): aggregate posterior
-    # [z_batch]
-    log_qz = log_sum_exp(log_density, dim=1) - math.log(x_batch)
-
-    return (neg_entropy - log_qz.mean(-1)).item()
+    # x_batch, nz = mu.size()
+    #
+    # # E_{q(z|x)}log(q(z|x)) = -0.5*nz*log(2*\pi) - 0.5*(1+logvar).sum(-1)
+    # neg_entropy = (
+    #     -0.5 * nz * math.log(2 * math.pi) - 0.5 * (1 + logvar).sum(-1)
+    # ).mean()
+    #
+    # # [z_batch, 1, nz]
+    # z_samples = model.t5.reparameterize(mu, logvar)
+    # z_samples = z_samples.unsqueeze(1)
+    #
+    # # [1, x_batch, nz]
+    # mu, logvar = mu.unsqueeze(0), logvar.unsqueeze(0)
+    # var = logvar.exp()
+    #
+    # # (z_batch, x_batch, nz)
+    # dev = z_samples - mu
+    #
+    # # (z_batch, x_batch)
+    # log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (
+    #     nz * math.log(2 * math.pi) + logvar.sum(-1)
+    # )
+    #
+    # # log q(z): aggregate posterior
+    # # [z_batch]
+    # log_qz = log_sum_exp(log_density, dim=1) - math.log(x_batch)
+    #
+    # return (neg_entropy - log_qz.mean(-1)).item()
 
 
 def calc_au(model, test_dataloader, delta=0.01, verbose=False):
@@ -171,19 +173,19 @@ def calc_all(model, test_dataloader, delta=0.01, verbose=False):
             logits, z, mu, logvar = model(encoder_inputs, encoder_masks, labels=labels)
 
         # Mi
-        latent_dim = mu.shape[0]
-        neg_entropy = (
-            -0.5 * latent_dim * math.log(2 * math.pi) - 0.5 * (1 + logvar).sum(-1)
-        ).mean()
-        mu_expanded, logvar_expanded = mu.unsqueeze(0), logvar.unsqueeze(0)
-        var = logvar_expanded.exp()
-        dev = z.unsqueeze(1) - mu_expanded
-        log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (
-            latent_dim * math.log(2 * math.pi) + logvar_expanded.sum(-1)
-        )
-        log_qz = log_sum_exp(log_density, dim=1) - math.log(batch_size)
-        mutual_info = (neg_entropy - log_qz.mean(-1)).item()
-        total_mi += mutual_info * batch_size
+        # latent_dim = mu.shape[0]
+        # neg_entropy = (
+        #     -0.5 * latent_dim * math.log(2 * math.pi) - 0.5 * (1 + logvar).sum(-1)
+        # ).mean()
+        # mu_expanded, logvar_expanded = mu.unsqueeze(0), logvar.unsqueeze(0)
+        # var = logvar_expanded.exp()
+        # dev = z.unsqueeze(1) - mu_expanded
+        # log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (
+        #     latent_dim * math.log(2 * math.pi) + logvar_expanded.sum(-1)
+        # )
+        # log_qz = log_sum_exp(log_density, dim=1) - math.log(batch_size)
+        # mutual_info = (neg_entropy - log_qz.mean(-1)).item()
+        total_mi += model.calc_mi(z, mu, logvar) * batch_size
 
         # AU
         all_mu.append(mu)

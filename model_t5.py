@@ -209,11 +209,10 @@ class T5VAE(LightningModule):
         return loss
 
     def regularization_loss(self, mu, logvar, training=False):
-        dimensionwise_loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
-        if self.min_z and training:
-            dimensionwise_loss[dimensionwise_loss < self.min_z] = self.min_z
-        loss = dimensionwise_loss.sum(-1)
-        return loss
+        return self.t5.calc_kl(mu, logvar, training)
+
+    def calc_mi(self, z, mu, logvar):
+        return self.t5.calc_mi(z, mu, logvar)
 
 
 if __name__ == "__main__":
