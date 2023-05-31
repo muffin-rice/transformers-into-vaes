@@ -16,11 +16,12 @@ from torch.distributions.kl import kl_divergence
 
 
 class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
-    def __init__(self, config, latent_dim, pooling_strategy):
+    def __init__(self, config, latent_dim, pooling_strategy, min_z):
         super().__init__(config)
         self.latent_dim = latent_dim
-        self.mu = nn.Linear(config.d_model, latent_dim, bias=False)
-        self.logvar = nn.Linear(config.d_model, latent_dim, bias=False)
+        self.alphas = nn.Linear(config.d_model, latent_dim, bias=False)
+        # self.beta = nn.Linear(config.d_model, 1, bias=False)
+        self.beta = lambda x : 1
         self.embed_size_per_head = config.d_model // config.num_heads
         self.memory_projection = nn.Linear(
             latent_dim,
@@ -62,7 +63,7 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
                 decoder_head_mask = head_mask
 
         # Encode if needed (training, first prediction pass)
-        z, mu, logvar = None, None, None
+        z, logalphas, beta = None, None, None
         if sampled_z is not None:
             z = sampled_z
             encoder_outputs = BaseModelOutput(
@@ -82,7 +83,7 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
                 return_dict=return_dict,
             )
             pooled = self.pool(encoder_outputs.hidden_states)
-            z, mu, logvar = self.calculate_latent(pooled)
+            z, logalphas, beta = self.calculate_latent(pooled)
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=encoder_outputs[0],
@@ -183,8 +184,8 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
         )
-        out.mu = mu
-        out.logvar = logvar
+        out.mu = logalphas
+        out.logvar = beta
         out.z = z
         return out
 
@@ -223,9 +224,10 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
             raise Exception("Wrong pooling strategy!")
 
     def calculate_latent(self, pooled):
-        mu, logvar = self.mu(pooled), self.logvar(pooled)
-        z = self.reparameterize(mu, logvar)
-        return z, mu, logvar
+        logalphas, beta = self.alphas(pooled), self.beta(pooled)
+        assert not logalphas.isnan().any(), f'pooled is nan: {pooled}'
+        z = self.reparameterize(logalphas, -1, beta=beta)
+        return z, logalphas, beta
 
     def build_past(self, z):
         projection = self.memory_projection(z)
@@ -239,31 +241,43 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
         past_key_values = tuple((ca, ca) for ca in cross_attn)
         return past_key_values
 
-    def reparameterize(self, alphas, _):
-        """
-        Reparameterization trick to sample from N(mu, var) from
-        N(0,1).
-        :param mu: (Tensor) Mean of the latent Gaussian [B x D]
-        :param logvar: (Tensor) Standard deviation of the latent Gaussian [B x D]
-        :return: (Tensor) [B x D]
-        """
-        gammas = Gamma(alphas, 1).sample()
-        total = gammas.sum()
-        xs = gammas / total
+    def reparameterize_knowles(self, alphas, beta = 1):
+        # TODO:
+        # approximates gamma quantile function with (u * alpha * gamma(alpha)) ^ (1/alpha)/ beta
+        # sample from uniform
+        unif = torch.rand_like(alphas)
 
-        return xs
+        # lgamma is differentiable
+        # approximate quantile function method
+        quant = 1 / beta * (unif * alphas * torch.lgamma(alphas).exp()) ** (1 / alphas)
 
-    def get_entropy(self, alphas, _):
-        # latent_dim = mu.shape[0]
-        # neg_entropy = (
-        #     -0.5 * latent_dim * math.log(2 * math.pi) - 0.5 * (1 + logvar).sum(-1)
-        # ).mean()
-        #
-        # return neg_entropy
+        # sum of gamma is dirichlet
+        dist = quant / quant.sum(dim=1)[:, None]
+        return dist
+
+    def reparameterize_torch(self, alphas, beta=1):
+        dist = Dirichlet(alphas)
+        return dist.rsample()
+
+    def reparameterize(self, logalphas, _, beta = 1):
+        """
+        Reparameterization trick to sample from Dirichlet(alphas) through various means
+        alphas > 0 so use logalphas as model output
+        """
+        alphas = logalphas.exp()
+        sampled = self.reparameterize_knowles(alphas)
+
+        assert not sampled.isnan().any()
+
+        return sampled
+
+
+    def get_entropy(self, logalphas, _):
+        alphas = logalphas.exp()
         dist = Dirichlet(alphas)
         return -dist.entropy()
 
-    def calc_mi(self, z, alphas, _):
+    def calc_mi(self, z, logalphas, _):
         # x_batch, nz = mu.size()
         #
         # # E_{q(z|x)}log(q(z|x)) = -0.5*nz*log(2*\pi) - 0.5*(1+logvar).sum(-1)
@@ -291,12 +305,9 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
         # return (neg_entropy - log_qz.mean(-1)).item()
         return -1
 
-    def calc_kl(self, alphas, _, training):
-        # dimensionwise_loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
-        # if self.min_z and training:
-        #     dimensionwise_loss[dimensionwise_loss < self.min_z] = self.min_z
-        # loss = dimensionwise_loss.sum(-1)
-        # return loss
+    def calc_kl(self, logalphas, _, training):
+
+        alphas = logalphas.exp()
 
         baseline = Dirichlet(torch.ones_like(alphas)) # baseline dirichlet?
         dist = Dirichlet(alphas)

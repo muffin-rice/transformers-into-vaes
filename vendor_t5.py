@@ -13,7 +13,7 @@ from transformers.modeling_outputs import (
 import math
 
 class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
-    def __init__(self, config, latent_dim, pooling_strategy):
+    def __init__(self, config, latent_dim, pooling_strategy, min_z):
         super().__init__(config)
         self.latent_dim = latent_dim
         self.mu = nn.Linear(config.d_model, latent_dim, bias=False)
@@ -25,6 +25,7 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
             bias=False,
         )
         self.pooling_strategy = pooling_strategy
+        self.min_z = min_z
 
     def forward(
         self,
@@ -78,7 +79,8 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
-            pooled = self.pool(encoder_outputs.hidden_states)
+            pooled = self.pool(encoder_outputs.hidden_states) # hidden states are nan
+            assert not pooled.isnan().any(), 'pooled are nan'
             z, mu, logvar = self.calculate_latent(pooled)
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(

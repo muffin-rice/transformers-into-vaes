@@ -21,7 +21,8 @@ from transformers.generation.stopping_criteria import (
     MaxLengthCriteria,
     StoppingCriteriaList,
 )
-from .vendor_t5 import ModifiedT5ForConditionalGeneration
+# from .vendor_t5 import ModifiedT5ForConditionalGeneration
+from .vendor_t5_ntm import ModifiedT5ForConditionalGeneration
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
@@ -45,6 +46,7 @@ class T5VAE(LightningModule):
             config=self.config,
             latent_dim=latent_dim,
             pooling_strategy=pooling_strategy,
+            min_z = min_z
         )
         self.iterations_per_training_epoch = iterations_per_training_epoch
         self.tokenizer = tokenizer
@@ -79,6 +81,8 @@ class T5VAE(LightningModule):
     def run_batch(self, batch, batch_idx, training=False):
         encoder_inputs, encoder_masks, decoder_targets = batch
 
+        assert (not encoder_inputs.isnan().any()) and (not encoder_masks.isnan().any())
+
         if training and self.denoise_percentage:
             for i, (inp, msk) in enumerate(zip(encoder_inputs, encoder_masks)):
                 token_length = (msk.sum() - 1).item()
@@ -98,8 +102,8 @@ class T5VAE(LightningModule):
                     (inp, torch.tensor([self.tokenizer.pad_token_id] * drop_count))
                 )
                 msk = torch.cat((msk, torch.tensor([0] * drop_count)))
-                encoder_inputs[i] = msk
-                encoder_masks[i] = inp
+                encoder_inputs[i] = inp
+                encoder_masks[i] = msk
 
         batch_size = encoder_inputs.shape[0]
 
