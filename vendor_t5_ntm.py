@@ -16,7 +16,7 @@ from torch.distributions.kl import kl_divergence
 
 
 class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
-    def __init__(self, config, latent_dim, pooling_strategy, min_z):
+    def __init__(self, config, latent_dim, pooling_strategy, min_z, bow_head):
         super().__init__(config)
         self.latent_dim = latent_dim
         self.alphas = nn.Linear(config.d_model, latent_dim, bias=False)
@@ -29,6 +29,7 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
             bias=False,
         )
         self.pooling_strategy = pooling_strategy
+        self.bow_head = bow_head
 
     def forward(
         self,
@@ -173,6 +174,9 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
             return ((loss,) + output) if loss is not None else output
 
+        # last hidden state is stored in decoder_outputs.last_hidden_state
+        bow_output = self.bow_head(decoder_outputs.last_hidden_state)
+
         out = Seq2SeqLMOutput(
             # loss=loss,
             logits=lm_logits,
@@ -187,6 +191,7 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
         out.mu = logalphas
         out.logvar = beta
         out.z = z
+        out.bow = bow_output
         return out
 
     def run_encoder(

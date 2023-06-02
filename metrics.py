@@ -45,7 +45,7 @@ def calc_batch_mi(model, batch, verbose=False):
     Returns: Float
     """
 
-    encoder_inputs, encoder_masks, labels = batch
+    encoder_inputs, encoder_masks, labels, targets_bow = batch
 
     encoder_inputs = encoder_inputs.to(model.device)
     encoder_masks = encoder_masks.to(model.device)
@@ -53,7 +53,7 @@ def calc_batch_mi(model, batch, verbose=False):
 
     # [x_batch, nz]
     with torch.no_grad():
-        _, z, mu, logvar = model(encoder_inputs, encoder_masks, labels)
+        _, z, mu, logvar, x_bow = model(encoder_inputs, encoder_masks, labels)
 
     return model.calc_mi(mu, logvar)
 
@@ -94,14 +94,14 @@ def calc_au(model, test_dataloader, delta=0.01, verbose=False):
 
     def get_mu(batch):
 
-        encoder_inputs, encoder_masks, labels = batch
+        encoder_inputs, encoder_masks, labels, targets_bow = batch
 
         encoder_inputs = encoder_inputs.to(model.device)
         encoder_masks = encoder_masks.to(model.device)
         labels = labels.to(model.device)
 
         with torch.no_grad():
-            _, _, mu, _ = model(encoder_inputs, encoder_masks, labels)
+            _, _, mu, _, _ = model(encoder_inputs, encoder_masks, labels)
 
         return mu
 
@@ -124,7 +124,7 @@ def calc_ppl(model, test_data_batch, verbose=False):
 
     for batch in loop:
 
-        encoder_inputs, encoder_masks, labels = batch
+        encoder_inputs, encoder_masks, labels, targets_bow = batch
 
         batch_size = encoder_inputs.shape[0]
 
@@ -133,7 +133,7 @@ def calc_ppl(model, test_data_batch, verbose=False):
         labels = labels.to(model.device)
 
         with torch.no_grad():
-            logits, _, mu, logvar = model(encoder_inputs, encoder_masks, labels=labels)
+            logits, _, mu, logvar, x_bow = model(encoder_inputs, encoder_masks, labels=labels)
 
         total_recon_loss += model.reconstruction_loss(logits, labels).sum()
         total_reg_loss += model.regularization_loss(mu, logvar).sum()
@@ -161,7 +161,8 @@ def calc_all(model, test_dataloader, delta=0.01, verbose=False):
 
     for batch in loop:
 
-        encoder_inputs, encoder_masks, labels = batch
+        encoder_inputs, encoder_masks, labels, targets_bow = batch
+
 
         batch_size = encoder_inputs.shape[0]
 
@@ -170,7 +171,7 @@ def calc_all(model, test_dataloader, delta=0.01, verbose=False):
         labels = labels.to(model.device)
 
         with torch.no_grad():
-            logits, z, mu, logvar = model(encoder_inputs, encoder_masks, labels=labels)
+            logits, z, mu, logvar, x_bow = model(encoder_inputs, encoder_masks, labels=labels)
 
         # Mi
         # latent_dim = mu.shape[0]

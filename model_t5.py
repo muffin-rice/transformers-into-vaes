@@ -21,8 +21,8 @@ from transformers.generation.stopping_criteria import (
     MaxLengthCriteria,
     StoppingCriteriaList,
 )
-# from .vendor_t5 import ModifiedT5ForConditionalGeneration
-from .vendor_t5_ntm import ModifiedT5ForConditionalGeneration
+from .vendor_t5 import ModifiedT5ForConditionalGeneration
+# from .vendor_t5_ntm import ModifiedT5ForConditionalGeneration
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
@@ -38,6 +38,7 @@ class T5VAE(LightningModule):
         fixed_reg_weight=None,
         denoise_percentage=0,
         base_model="t5-base",
+        bow_head = None,
     ):
         super().__init__()
         self.config = T5Config.from_pretrained(base_model)
@@ -46,7 +47,8 @@ class T5VAE(LightningModule):
             config=self.config,
             latent_dim=latent_dim,
             pooling_strategy=pooling_strategy,
-            min_z = min_z
+            min_z = min_z,
+            bow_head = bow_head
         )
         self.iterations_per_training_epoch = iterations_per_training_epoch
         self.tokenizer = tokenizer
@@ -72,14 +74,14 @@ class T5VAE(LightningModule):
             output_hidden_states=True,
             **kwargs
         )
-        return (output.logits, output.z, output.mu, output.logvar)
+        return (output.logits, output.z, output.mu, output.logvar, output.bow)
 
     #####
     # Torch lightning
     #####
 
     def run_batch(self, batch, batch_idx, training=False):
-        encoder_inputs, encoder_masks, decoder_targets = batch
+        encoder_inputs, encoder_masks, decoder_targets, targets_bow = batch
 
         assert (not encoder_inputs.isnan().any()) and (not encoder_masks.isnan().any())
 
@@ -107,7 +109,7 @@ class T5VAE(LightningModule):
 
         batch_size = encoder_inputs.shape[0]
 
-        x, z, mu, logvar = self(
+        x, z, mu, logvar, bow = self(
             encoder_inputs,
             encoder_masks,
             labels=decoder_targets,
@@ -115,37 +117,44 @@ class T5VAE(LightningModule):
 
         recon_loss = self.reconstruction_loss(x, decoder_targets)
         reg_loss = self.regularization_loss(mu, logvar, training)
+        bow_loss = self.bow_loss(bow, targets_bow)
 
-        return recon_loss.mean(), reg_loss.mean()
+        return recon_loss.mean(), reg_loss.mean(), bow_loss.mean()
 
-    def kld_weight(self, start=0.0, stop=1, n_cycle=1, ratio=1, linear_ratio=1):
+    def get_loss_weights(self, ratio=(0.33, 0.66),  min_baseline=1e-3):
+        '''dynamic kld weight based on epoch number
+        3 stages:
+        autoencoder
+        kl
+        bow (with kl)
+        all set at .33'''
         if self.fixed_reg_weight is not None:
             return self.fixed_reg_weight
         # cycle_size = self.iterations_per_training_epoch // n_cycle
         cycle_size = self.iterations_per_training_epoch * 100
-        vae_steps = int(cycle_size * ratio)
-        ae_steps = cycle_size - vae_steps
-        linear_steps = int(vae_steps * linear_ratio)  # 25%
-        full_steps = cycle_size - ae_steps - linear_steps  # 25%
+
         step = self.global_step % cycle_size
-        if step <= ae_steps:
-            return 0
-        vae_step = step - ae_steps
-        weight = (
-            vae_step / linear_steps * (stop - start)
-            if vae_step <= linear_steps
-            else stop
-        )
-        return weight
+        if step / cycle_size <= ratio[0]:
+            return min_baseline, min_baseline
+
+        kl_weight = min((step/cycle_size - ratio[0]) / (ratio[1] - ratio[0]), 1)
+
+        bow_weight = min((step / cycle_size - ratio[1]) / (ratio[1] - ratio[0]), 1)
+
+        if step / cycle_size <= ratio[1]:
+            return kl_weight, min_baseline
+
+        return kl_weight * 0.4, bow_weight * 0.6
 
     def training_step(self, batch, batch_idx):
-        recon_loss, reg_loss = self.run_batch(batch, batch_idx, training=True)
-        reg_weight = self.kld_weight()
-        loss = recon_loss + reg_weight * reg_loss
+        recon_loss, reg_loss, bow_loss = self.run_batch(batch, batch_idx, training=True)
+        reg_weight, bow_weight = self.get_loss_weights()
+        loss = recon_loss + reg_weight * reg_loss + bow_weight * bow_loss
         self.log("train_reg_weight", reg_weight)
         self.log("train_recon_loss", recon_loss)
         self.log("train_reg_loss", reg_weight * reg_loss)
         self.log("train_unweighted_reg_loss", reg_loss)
+        self.log("train_bow_loss", bow_loss)
         self.log("train_loss", loss)
         return loss
 
@@ -160,11 +169,12 @@ class T5VAE(LightningModule):
         return
 
     def validation_step(self, batch, batch_idx):
-        recon_loss, reg_loss = self.run_batch(batch, batch_idx)
-        loss = recon_loss + reg_loss
+        recon_loss, reg_loss, bow_loss = self.run_batch(batch, batch_idx)
+        loss = recon_loss + reg_loss + bow_loss
         # mi = calc_batch_mi(self, batch)
         self.log("val_recon_loss", recon_loss)
         self.log("val_reg_loss", reg_loss)
+        self.log("val_bow_loss", bow_loss)
         self.log("val_loss", loss)
         # self.log("finished_epoch", self.current_epoch)
         return loss
@@ -180,10 +190,11 @@ class T5VAE(LightningModule):
         self.log("val_au", au)
 
     def test_step(self, batch, batch_idx):
-        recon_loss, reg_loss = self.run_batch(batch, batch_idx)
-        loss = recon_loss + reg_loss
+        recon_loss, reg_loss, bow_loss = self.run_batch(batch, batch_idx)
+        loss = recon_loss + reg_loss + bow_loss
         self.log("test_loss", recon_loss)
         self.log("test_reg_loss", reg_loss)
+        self.log("test_bow_loss", bow_loss)
         self.log("test_loss", loss)
         self.log("finished_epoch", self.current_epoch)
         return loss
@@ -214,6 +225,9 @@ class T5VAE(LightningModule):
 
     def regularization_loss(self, mu, logvar, training=False):
         return self.t5.calc_kl(mu, logvar, training)
+
+    def bow_loss(self, x, target_bow):
+        return nn.BCEWithLogitsLoss()(x, target_bow)
 
     def calc_mi(self, z, mu, logvar):
         return self.t5.calc_mi(z, mu, logvar)
