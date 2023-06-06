@@ -270,7 +270,8 @@ class ModifiedT5ForConditionalGeneration(T5ForConditionalGeneration):
         alphas > 0 so use logalphas as model output
         """
         alphas = logalphas.exp()
-        sampled = self.reparameterize_knowles(alphas)
+        # sampled = self.reparameterize_knowles(alphas)
+        sampled = self.reparameterize_torch(alphas)
 
         assert not sampled.isnan().any()
 

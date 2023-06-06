@@ -21,8 +21,8 @@ from transformers.generation.stopping_criteria import (
     MaxLengthCriteria,
     StoppingCriteriaList,
 )
-from .vendor_t5 import ModifiedT5ForConditionalGeneration
-# from .vendor_t5_ntm import ModifiedT5ForConditionalGeneration
+# from .vendor_t5 import ModifiedT5ForConditionalGeneration
+from .vendor_t5_ntm import ModifiedT5ForConditionalGeneration
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
@@ -123,11 +123,10 @@ class T5VAE(LightningModule):
 
     def get_loss_weights(self, ratio=(0.33, 0.66),  min_baseline=1e-3):
         '''dynamic kld weight based on epoch number
-        3 stages:
-        autoencoder
-        kl
-        bow (with kl)
-        all set at .33'''
+        recon weight fixed @ zero
+        reg_loss gradually increases
+        bow weight fixed (baseline weight)
+        '''
         if self.fixed_reg_weight is not None:
             return self.fixed_reg_weight
         # cycle_size = self.iterations_per_training_epoch // n_cycle
@@ -135,21 +134,19 @@ class T5VAE(LightningModule):
 
         step = self.global_step % cycle_size
         if step / cycle_size <= ratio[0]:
-            return min_baseline, min_baseline
+            return min_baseline, min_baseline, 1
 
         kl_weight = min((step/cycle_size - ratio[0]) / (ratio[1] - ratio[0]), 1)
-
-        bow_weight = min((step / cycle_size - ratio[1]) / (ratio[1] - ratio[0]), 1)
 
         if step / cycle_size <= ratio[1]:
             return kl_weight, min_baseline
 
-        return kl_weight * 0.4, bow_weight * 0.6
+        return min_baseline, kl_weight * 0.4, 1
 
     def training_step(self, batch, batch_idx):
         recon_loss, reg_loss, bow_loss = self.run_batch(batch, batch_idx, training=True)
-        reg_weight, bow_weight = self.get_loss_weights()
-        loss = recon_loss + reg_weight * reg_loss + bow_weight * bow_loss
+        recon_weight, reg_weight, bow_weight = self.get_loss_weights()
+        loss = recon_weight * recon_loss + reg_weight * reg_loss + bow_weight * bow_loss
         self.log("train_reg_weight", reg_weight)
         self.log("train_recon_loss", recon_loss)
         self.log("train_reg_loss", reg_weight * reg_loss)
